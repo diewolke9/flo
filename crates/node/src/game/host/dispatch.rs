@@ -40,6 +40,9 @@ use tokio_util::sync::CancellationToken;
 use tracing_futures::Instrument;
 
 use std::iter::Iterator;
+use flo_util::binary::BinBufExt;
+use flo_w3gs::actions::Action;
+use bytes::Bytes;
 
 const DISPATCH_ACTIONS_MTU: usize = 1350 - 8;
 
@@ -734,13 +737,29 @@ impl State {
     match packet.type_id() {
       PacketTypeId::OutgoingAction => {
         let payload: OutgoingAction = packet.decode_payload()?;
+        let other_player_id = match slot_player_id {
+          1 => 2,
+          2 => 1,
+          _ => 1
+        };
         action_tx
-          .send(ActionMsg::PlayerAction(PlayerAction {
-            player_id: slot_player_id,
-            data: payload.data,
-          }))
+            .send(ActionMsg::PlayerAction(PlayerAction {
+              player_id: slot_player_id,
+              data: payload.data.clone(),
+            }))
+            .await
+            .map_err(|_| Error::Cancelled)?;
+        if payload.data.peek_u8().is_some_and(|x| x == 0x77) {
+          tracing::warn!("Detected player sync action: player_id={} {:#04x?}", slot_player_id, payload.data);
+          action_tx.send(ActionMsg::PlayerAction(
+            PlayerAction {
+              player_id: other_player_id,
+              data: Bytes::from("\x77FLO\0test response\0\0\0\0")
+            }
+          ))
           .await
           .map_err(|_| Error::Cancelled)?;
+        }
       }
       PacketTypeId::DropReq => {
         tracing::info!(game_id = self.game_id, player_id, "drop request");
